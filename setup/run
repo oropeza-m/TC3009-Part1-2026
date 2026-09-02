@@ -13,7 +13,6 @@
 #   ./setup/run logs         ultimas lineas de los dos registros
 #   ./setup/run logs api     sigue el registro de la API en vivo
 #   ./setup/run sync         trae los cambios que empujaste desde tu laptop
-#   ./setup/run actualizar 2 trae el material para empezar la sesion 2
 #   ./setup/run url          en que direccion esta tu tablero
 #   ./setup/run doctor       revisa el entorno y dice que falta
 #
@@ -213,92 +212,6 @@ case "${1:-}" in
     cd "$REPO_DIR" && git pull
     echo
     echo "  Para que los cambios se vean:  ./setup/run restart"
-    ;;
-
-  actualizar)
-    # Trae el material que necesitas para empezar una sesion, sin pisar el
-    # codigo que ya escribiste.
-    #
-    #   ./setup/run actualizar 2    prepara la sesion 2
-    #
-    # El esqueleto de la sesion N vive en el checkpoint s(N-1): es el estado en
-    # que termina la sesion anterior. Leer de 'main' no serviria, porque main
-    # apunta al estado de arranque y ahi el esqueleto todavia no existe.
-    #
-    # Quien es dueño de que archivo esta en setup/archivos-del-curso.txt.
-    sesion="${2:-}"
-    if [[ -z "$sesion" ]]; then
-      mal "dime que sesion vas a empezar:  ./setup/run actualizar 2"
-      exit 1
-    fi
-    if ! [[ "$sesion" =~ ^[1-4]$ ]]; then
-      mal "la sesion debe ser un numero del 1 al 4"
-      exit 1
-    fi
-
-    CURSO="https://github.com/vsosahdz/TC3009-Part1-2026.git"
-    LISTA="$REPO_DIR/setup/archivos-del-curso.txt"
-    REF="s$((sesion - 1))"
-
-    cd "$REPO_DIR"
-
-    if ! git remote get-url curso >/dev/null 2>&1; then
-      git remote add curso "$CURSO"
-      ok "remoto 'curso' agregado"
-    fi
-
-    echo "  trayendo el material del curso (checkpoint $REF)..."
-    git fetch -q --tags curso || { mal "no se pudo contactar al repositorio del curso"; exit 1; }
-
-    if ! git rev-parse -q --verify "refs/tags/$REF" >/dev/null; then
-      mal "el curso no ha publicado el checkpoint $REF todavia"
-      exit 1
-    fi
-
-    if [[ -n "$(git status --porcelain)" ]]; then
-      aviso "tienes cambios sin confirmar. Se van a conservar, pero conviene"
-      echo "        hacer commit antes de actualizar."
-      echo
-    fi
-
-    seccion=""
-    traidos=0
-    conservados=0
-
-    while IFS= read -r linea || [[ -n "$linea" ]]; do
-      linea="${linea%%#*}"
-      linea="$(echo "$linea" | xargs || true)"
-      [[ -z "$linea" ]] && continue
-
-      case "$linea" in
-        "[DEL CURSO]") seccion="curso"; continue ;;
-        "[TUYOS]")     seccion="tuyo";  continue ;;
-      esac
-
-      if [[ "$seccion" == "curso" ]]; then
-        # Siempre: son archivos que tu no editas.
-        if git checkout "$REF" -- "$linea" 2>/dev/null; then
-          echo "    actualizado  $linea"
-          traidos=$((traidos + 1))
-        fi
-      else
-        # Solo si no existe: tu codigo no se toca nunca.
-        if [[ -e "$linea" ]]; then
-          echo "    conservado   $linea  (ya lo tienes)"
-          conservados=$((conservados + 1))
-        elif git checkout "$REF" -- "$linea" 2>/dev/null; then
-          echo "    nuevo        $linea"
-          traidos=$((traidos + 1))
-        fi
-      fi
-    done < "$LISTA"
-
-    echo
-    ok "$traidos rutas traidas del curso, $conservados conservadas tal cual"
-    echo
-    echo "  Revisa que llego:   git status"
-    echo "  Instala lo nuevo:   bash setup/bootstrap-ec2.sh"
-    echo "  Y guardalo:         git add -A && git commit -m \"material de la sesion $sesion\""
     ;;
 
   url)
