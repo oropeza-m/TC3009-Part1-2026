@@ -1,42 +1,42 @@
-"""API del tablero de precios de vivienda.
+"""Ensamblador de la API.
 
-Sesion 1: sirve agregados y registros del dataset. Todavia no hay modelo.
-El contrato que implementa este archivo esta en docs/api-contrato.md.
+Este archivo NO cambia de una sesion a otra, y eso es a proposito.
+
+Cada sesion agrega un modulo propio --s1_tablero.py, s2_modelo.py...-- y este
+ensamblador los descubre y los registra solo. Asi, cuando traes el material de
+la sesion siguiente llegan archivos NUEVOS: nunca hay que fusionar cambios
+sobre codigo que ya escribiste, y no hay conflictos con tu version.
+
+    backend/
+    ├── app.py           esto. el ensamblador. no lo edites
+    ├── s1_tablero.py    sesion 1: stats y data
+    ├── s2_modelo.py     sesion 2: el modelo y las predicciones  (*)
+    └── s3_producto.py   sesion 3: historial y explicaciones     (*)
+
+(*) Los modulos marcados NO existen todavia: cada uno llega al empezar su
+    sesion, cuando corres
+
+        ./setup/run actualizar 2      (y luego 3, y luego 4)
+
+    Si buscas s2_modelo.py y no esta, no falta nada: es que no has traido el
+    material de esa sesion. Mientras tanto, la aplicacion funciona con los
+    modulos que si existen.
+
+Para correrlo:  ./setup/run start
 """
 
-import os
+import importlib
+import pathlib
 import re
+import sys
 
-import pandas as pd
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 from flask_cors import CORS
 
 API_VERSION = "1.0.0"
 
-# Las diez features que va a consumir el modelo en la sesion 2, mas Id y el target.
-# El tablero y el predictor hablan del mismo vocabulario desde el dia uno.
-FEATURE_COLUMNS = [
-    "GrLivArea",
-    "OverallQual",
-    "YearBuilt",
-    "TotalBsmtSF",
-    "GarageCars",
-    "FullBath",
-    "BedroomAbvGr",
-    "Neighborhood",
-    "LotArea",
-    "KitchenQual",
-]
-TARGET_COLUMN = "SalePrice"
-EXPOSED_COLUMNS = ["Id"] + FEATURE_COLUMNS + [TARGET_COLUMN]
-
-DEFAULT_LIMIT = 20
-MAX_LIMIT = 200
-
-DATA_PATH = os.environ.get(
-    "DATA_PATH",
-    os.path.join(os.path.dirname(__file__), "..", "data", "train.csv"),
-)
+AQUI = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(AQUI))
 
 app = Flask(__name__)
 
@@ -55,123 +55,58 @@ app = Flask(__name__)
 ORIGEN_DESARROLLO = re.compile(r"^http://[A-Za-z0-9.\-]+:3000$")
 CORS(app, origins=[ORIGEN_DESARROLLO])
 
-# ATAJO-P1: el CSV se carga completo en memoria al arrancar y nunca se recarga.
-#           Alcanza para 1460 filas y hace la sesion 1 legible.
-#           Parte 2 -> base de datos, consultas, paginacion real.
-df = pd.read_csv(DATA_PATH)
+
+# ---------------------------------------------------------------------------
+# Descubrimiento de los modulos de cada sesion
+# ---------------------------------------------------------------------------
+
+modulos = []
+
+for archivo in sorted(AQUI.glob("s[0-9]_*.py")):
+    modulo = importlib.import_module(archivo.stem)
+    if hasattr(modulo, "bp"):
+        app.register_blueprint(modulo.bp)
+        modulos.append(modulo)
+        print(f"modulo cargado: {archivo.stem}", flush=True)
+    else:
+        print(f"AVISO: {archivo.stem} no expone un blueprint 'bp'; se omite", flush=True)
+
+if not modulos:
+    print(
+        "\nAVISO: no se cargo ningun modulo de sesion.\n"
+        "       ¿Ya escribiste backend/s1_tablero.py?\n",
+        flush=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# El unico endpoint que vive aqui
+# ---------------------------------------------------------------------------
 
 
 @app.get("/api/health")
 def health():
     """Estado del servicio.
 
-    En la sesion 2 esta respuesta crece con model_version, sklearn_version y
-    artifact_hash, cuando exista un artefacto del que informar.
+    Cada modulo puede aportar informacion definiendo una funcion estado().
+    Asi, cuando la sesion 2 agrega el modelo, este endpoint empieza a reportar
+    la version del artefacto sin que haya que tocar este archivo.
+
+    Si el estado() de un modulo falla, se reporta ese modulo como roto y los
+    demas siguen respondiendo. Un chequeo de salud que se cae entero porque
+    una parte esta a medias no sirve para nada: justo cuando algo esta mal es
+    cuando necesitas que te diga QUE esta mal.
     """
-    return jsonify({"status": "ok", "api_version": API_VERSION})
-
-
-@app.get("/api/stats")
-def stats():
-    """Agregados del dataset. Alimenta las graficas del tablero.
-
-    Si llega el parametro neighborhood, las estadisticas del target y el desglose
-    por calidad se calculan solo sobre esa colonia. El desglose por colonia se
-    mantiene global a proposito: es el eje de comparacion, y filtrarlo a una sola
-    colonia lo dejaria sin sentido.
-    """
-    neighborhood = request.args.get("neighborhood")
-    alcance = df[df["Neighborhood"] == neighborhood] if neighborhood else df
-
-    # Siempre sobre df completo, nunca sobre el alcance filtrado.
-    por_colonia = (
-        df.groupby("Neighborhood")[TARGET_COLUMN]
-        .agg(["count", "mean"])
-        .reset_index()
-        .sort_values("mean", ascending=False)
-    )
-    by_neighborhood = [
-        {
-            "neighborhood": fila["Neighborhood"],
-            "count": int(fila["count"]),
-            "mean_price": round(float(fila["mean"]), 1),
-        }
-        for _, fila in por_colonia.iterrows()
-    ]
-
-    # Una colonia sin registros no es un error: es un resultado vacio.
-    if len(alcance) == 0:
-        return jsonify(
-            {
-                "count": 0,
-                "scope": neighborhood,
-                "target": None,
-                "by_neighborhood": by_neighborhood,
-                "by_overall_qual": [],
-            }
-        )
-
-    precios = alcance[TARGET_COLUMN]
-    por_calidad = (
-        alcance.groupby("OverallQual")[TARGET_COLUMN]
-        .agg(["count", "mean"])
-        .reset_index()
-        .sort_values("OverallQual")
-    )
-
-    # Los tipos de numpy no son serializables a JSON: int() y float() no son
-    # adorno. Sin ellos el servidor truena con
-    # "Object of type int64 is not JSON serializable".
-    return jsonify(
-        {
-            "count": int(len(alcance)),
-            "scope": neighborhood,
-            "target": {
-                "name": TARGET_COLUMN,
-                "min": int(precios.min()),
-                "mean": round(float(precios.mean()), 1),
-                "median": int(precios.median()),
-                "max": int(precios.max()),
-            },
-            "by_neighborhood": by_neighborhood,
-            "by_overall_qual": [
-                {
-                    "overall_qual": int(fila["OverallQual"]),
-                    "count": int(fila["count"]),
-                    "mean_price": round(float(fila["mean"]), 1),
-                }
-                for _, fila in por_calidad.iterrows()
-            ],
-        }
-    )
-
-@app.get("/api/data")
-def data():
-    """Registros individuales, con filtro opcional por colonia."""
-    neighborhood = request.args.get("neighborhood")
-
-    try:
-        limit = int(request.args.get("limit", DEFAULT_LIMIT))
-    except ValueError:
-        limit = DEFAULT_LIMIT
-    limit = max(1, min(limit, MAX_LIMIT))
-
-    filtrado = df
-    if neighborhood:
-        filtrado = filtrado[filtrado["Neighborhood"] == neighborhood]
-
-    # Un filtro sin coincidencias devuelve una lista vacia con 200, no un error.
-    # Una busqueda vacia es un resultado legitimo; un error es que algo salio mal.
-    total = int(len(filtrado))
-    pagina = filtrado.head(limit)[EXPOSED_COLUMNS]
-
-    return jsonify(
-        {
-            "count": int(len(pagina)),
-            "total_matching": total,
-            "rows": pagina.to_dict(orient="records"),
-        }
-    )
+    respuesta = {"status": "ok", "api_version": API_VERSION}
+    for modulo in modulos:
+        if not hasattr(modulo, "estado"):
+            continue
+        try:
+            respuesta.update(modulo.estado())
+        except Exception as e:  # noqa: BLE001
+            respuesta["status"] = "degradado"
+            respuesta.setdefault("modulos_con_falla", {})[modulo.__name__] = str(e)
+    return jsonify(respuesta)
 
 
 if __name__ == "__main__":
