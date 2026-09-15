@@ -31,3 +31,26 @@ export const getHealth = () => get("/api/health");
 export const getStats = (neighborhood) => get("/api/stats", { neighborhood });
 export const getData = (neighborhood, limit = 20) =>
   get("/api/data", { neighborhood, limit });
+
+// --- Sesion 3 ---
+
+async function post(path, cuerpo) {
+  const respuesta = await fetch(API_BASE + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(cuerpo),
+  });
+  const datos = await respuesta.json().catch(() => ({}));
+  if (!respuesta.ok) {
+    // El backend dice QUE campo esta mal. Ese mensaje es para el usuario,
+    // asi que se propaga tal cual en lugar de un "error 400" generico.
+    throw new Error(datos.error || `${respuesta.status} al pedir ${path}`);
+  }
+  return datos;
+}
+
+export const getModel = () => get("/api/model");
+export const predecir = (entrada) => post("/api/predict", entrada);
+export const explicar = (entrada, prediccion) =>
+  post("/api/explain", { input: entrada, prediction: prediccion });
+export const getHistory = (limit = 50) => get("/api/history", { limit });
